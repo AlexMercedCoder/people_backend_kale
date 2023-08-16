@@ -17,6 +17,12 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 // import morgan
 const morgan = require("morgan");
+// import cookie-parser
+const cookieParser = require("cookie-parser");
+// import bcrypt
+const bcrypt = require("bcryptjs");
+// import jwt
+const jwt = require("jsonwebtoken");
 
 ///////////////////////////
 // DATABASE CONNECTION
@@ -36,19 +42,44 @@ mongoose.connection
 // models = PascalCase, singular "People"
 // collections, tables =snake_case, plural "peoples"
 
+// USER MODEL for logged in users
+const UserSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  password: { type: String, required: true }
+});
+const User = mongoose.model("User", UserSchema);
+
 const peopleSchema = new mongoose.Schema({
   name: String,
   image: String,
   title: String,
+  username: String,
 });
 
 const People = mongoose.model("People", peopleSchema);
+
+// Custom auth middleware
+async function authCheck(req, res, next) {
+  // check if the request has a cookie
+  if(req.cookies.token) {
+    const payload = await jwt.verify(req.cookies.token, process.env.SECRET)
+    // store the payload in the request
+    req.payload = payload;
+    // move to next middleware
+    next();
+  } else {
+    // if the request does not have a cookie, send a 401 error
+    res.status(401).json({ error: "Unauthorized" });
+  }
+}
 
 //////////////////////////////
 // Middleware
 //////////////////////////////
 // cors for preventing cors errors (allows all requests from other origins)
 app.use(cors());
+// cookie-parser for parsing cookies(needed for auth)
+app.use(cookieParser());
 // morgan for logging requests
 app.use(morgan("dev"));
 // express functionality to recognize incoming request objects as JSON objects
@@ -63,7 +94,7 @@ app.use(express.json());
 // IDUCS - INDEX, DESTROY, UPDATE, CREATE, SHOW (FOR AN JSON API)
 
 // INDEX - GET - /people - gets all people
-app.get("/people", async (req, res) => {
+app.get("/people", authCheck, async (req, res) => {
   try {
     // fetch all people from database
     const people = await People.find({});
@@ -76,10 +107,12 @@ app.get("/people", async (req, res) => {
 });
 
 // CREATE - POST - /people - create a new person
-app.post("/people", async (req, res) => {
+app.post("/people", authCheck, async (req, res) => {
   try {
     // create the new person
     const person = await People.create(req.body);
+    // add the username to the person
+    person.username = req.payload.username;
     // send newly created person as JSON
     res.json(person);
   } catch (error) {
@@ -88,7 +121,7 @@ app.post("/people", async (req, res) => {
 });
 
 // SHOW - GET - /people/:id - get a single person
-app.get("/people/:id", async (req, res) => {
+app.get("/people/:id", authCheck, async (req, res) => {
   try {
     // get a person from the database
     const person = await People.findById(req.params.id);
@@ -100,7 +133,7 @@ app.get("/people/:id", async (req, res) => {
 });
 
 // UPDATE - PUT - /people/:id - update a single person
-app.put("/people/:id", async (req, res) => {
+app.put("/people/:id", authCheck, async (req, res) => {
   try {
     // update the person
     const person = await People.findByIdAndUpdate(req.params.id, req.body, {
@@ -114,7 +147,7 @@ app.put("/people/:id", async (req, res) => {
 });
 
 // DESTROY - DELETE - /people/:id - delete a single person
-app.delete("/people/:id", async (req, res) => {
+app.delete("/people/:id", authCheck, async (req, res) => {
     try {
         // delete the person
         const person = await People.findByIdAndDelete(req.params.id)
@@ -129,6 +162,61 @@ app.delete("/people/:id", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({ hello: "world" });
 });
+
+// AUTH ROUTES
+// sign up a new user - POST - /users/signup
+app.post("/signup", async (req, res) => {
+  try {
+    let {username, password} = req.body;
+    // hash the password
+    password = await bcrypt.hash(password, await bcrypt.genSalt(10));
+    // create a new user
+    const user = await User.create({username, password});
+    // send the new user as json
+    res.json(user);
+  } catch (error) {
+    res.status(400).json({ error });
+  }
+});
+
+// login an existing user - POST - /users/login
+app.post("/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    // find the user
+    const user = await User.findOne({ username });
+    // check if user exists
+    if(!user) {
+      throw new Error("User does not exist");
+    }
+    // check if password is correct
+    const passwordCorrect = await bcrypt.compare(password, user.password);
+    // if password is incorrect, return an error
+    if(!passwordCorrect) {
+      throw new Error("Password is incorrect");
+    }
+    // create a token
+    const token = jwt.sign({username: user.username}, process.env.JWT_SECRET);
+    // send a response with the token
+    res.cookie("token", token);
+    // send the user as json
+    res.json(user);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+})
+
+// get /cookietest to test our cookie
+app.get("/cookietest", (req, res) => {
+  res.json(req.cookies);
+})
+
+// logout route - GET - /users/logout
+app.get("/logout", (req, res) => {
+  res.clearCookie("token");
+  res.json({ message: "Logged out" });
+});
+
 
 ////////////////////////////
 // LISTENER
